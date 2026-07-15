@@ -4,6 +4,7 @@ namespace JaD0\Storages\Adapters\S3;
 
 use Aws\S3\Exception\S3Exception;
 use Aws\S3\S3Client;
+use JaD0\Storages\Dto\ListedObject;
 use JaD0\Storages\Exceptions\StorageException;
 use JaD0\Storages\Interfaces\Storage;
 use JaD0\Storages\Support\MimeTypeResolver;
@@ -145,6 +146,43 @@ class S3Storage implements Storage
         } catch (S3Exception $exception) {
             $this->logger->error(
                 "Ошибка при чтении объекта '$path' в поток в бакете '$this->bucket': " . $exception,
+                ["category" => "storage.S3Storage", "exception" => $exception]
+            );
+
+            throw new StorageException($exception->getMessage(), $exception->isConnectionError(), $exception);
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function listObjects(string $prefix = ""): iterable
+    {
+        try {
+            $paginator = $this->client->getPaginator('ListObjectsV2', [
+                'Bucket' => $this->bucket,
+                'Prefix' => $prefix,
+            ]);
+
+            foreach ($paginator as $result) {
+                foreach ($result['Contents'] ?? [] as $object) {
+                    $path = (string)($object['Key'] ?? '');
+
+                    if ($path === '') {
+                        continue;
+                    }
+
+                    yield new ListedObject(
+                        $path,
+                        basename($path),
+                        isset($object['Size']) ? (int)$object['Size'] : null,
+                        $object['LastModified'] ?? null
+                    );
+                }
+            }
+        } catch (S3Exception $exception) {
+            $this->logger->error(
+                "Ошибка при получении списка объектов с префиксом '$prefix' в бакете '$this->bucket': " . $exception,
                 ["category" => "storage.S3Storage", "exception" => $exception]
             );
 

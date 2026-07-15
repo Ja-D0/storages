@@ -7,6 +7,7 @@ use JaD0\Storages\Exceptions\StorageConfigurationException;
 use JaD0\Storages\Exceptions\StorageException;
 use JaD0\Storages\Interfaces\Cluster;
 use JaD0\Storages\Interfaces\ClusterConsistencyManager;
+use JaD0\Storages\Interfaces\ListableStorage;
 use JaD0\Storages\Interfaces\StorageAvailabilityManager;
 use Psr\Http\Message\StreamInterface;
 use Psr\Log\LoggerInterface;
@@ -382,6 +383,58 @@ class ClusterStorage implements Cluster
         $this->reportNodesAvailabilityStates($availableNodes, $notAvailableNodes);
 
         throw new StorageException("Файл не найден: $path");
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function listObjects(string $prefix = ""): iterable
+    {
+        $seenPaths = [];
+        $successfulNodes = 0;
+        $availableNodes = $notAvailableNodes = [];
+
+        try {
+            foreach ($this->storages as $nodeKey => $storage) {
+                if (!$this->storageAvailabilityManager->isAvailable($nodeKey)) {
+                    continue;
+                }
+
+                try {
+                    foreach ($storage->listObjects($prefix) as $object) {
+                        $path = $object->path ?? null;
+
+                        if ($path === null || isset($seenPaths[$path])) {
+                            continue;
+                        }
+
+                        $seenPaths[$path] = true;
+                        yield $object;
+                    }
+
+                    $successfulNodes++;
+                    $availableNodes[] = $nodeKey;
+                } catch (StorageException $storageException) {
+                    if ($storageException->isStorageNotAvailable()) {
+                        $notAvailableNodes[] = $nodeKey;
+                    } else {
+                        $availableNodes[] = $nodeKey;
+                    }
+
+                    $this->logger->error(
+                        "Ошибка при получении списка объектов с префиксом '$prefix' из узла $nodeKey: "
+                        . $storageException->getMessage(),
+                        ["category" => "storage.ClusterStorage", "exception" => $storageException]
+                    );
+                }
+            }
+        } finally {
+            $this->reportNodesAvailabilityStates($availableNodes, $notAvailableNodes);
+        }
+
+        if ($successfulNodes === 0) {
+            throw new StorageException("Не удалось получить список объектов с префиксом '$prefix'");
+        }
     }
 
     /**

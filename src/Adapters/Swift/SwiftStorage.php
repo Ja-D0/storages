@@ -4,6 +4,7 @@ namespace JaD0\Storages\Adapters\Swift;
 
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Psr7\Stream;
+use JaD0\Storages\Dto\ListedObject;
 use JaD0\Storages\Exceptions\StorageException;
 use JaD0\Storages\Interfaces\Storage;
 use JaD0\Storages\Support\MimeTypeResolver;
@@ -203,6 +204,47 @@ class SwiftStorage implements Storage
         } catch (ConnectException $connectException) {
             $this->logger->error(
                 "Ошибка при чтении объекта '$path' в поток в контейнере '$this->containerName': "
+                . $connectException->getMessage(),
+                ["category" => "storage.SwiftStorage", "exception" => $connectException]
+            );
+
+            throw new StorageException($connectException->getMessage(), true, $connectException);
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function listObjects(string $prefix = ""): iterable
+    {
+        try {
+            $objects = $this->getContainerForObjectStore()->listObjects(['prefix' => $prefix]);
+
+            foreach ($objects as $object) {
+                $path = (string)($object->name ?? '');
+
+                if ($path === '') {
+                    continue;
+                }
+
+                yield new ListedObject(
+                    $path,
+                    basename($path),
+                    isset($object->contentLength) ? (int)$object->contentLength : null,
+                    $object->lastModified ?? null
+                );
+            }
+        } catch (BadResponseError $badResponseError) {
+            $this->logger->error(
+                "Ошибка получения списка объектов с префиксом '$prefix' в контейнере '$this->containerName': "
+                . $badResponseError->getMessage(),
+                ["category" => "storage.SwiftStorage", "exception" => $badResponseError]
+            );
+
+            $this->handleBadResponseError($badResponseError);
+        } catch (ConnectException $connectException) {
+            $this->logger->error(
+                "Ошибка получения списка объектов с префиксом '$prefix' в контейнере '$this->containerName': "
                 . $connectException->getMessage(),
                 ["category" => "storage.SwiftStorage", "exception" => $connectException]
             );
