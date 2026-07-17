@@ -5,6 +5,7 @@ namespace JaD0\Storages\Adapters\FileSystem;
 use Exception;
 use GuzzleHttp\Psr7\Stream;
 use JaD0\Storages\Dto\ListedObject;
+use JaD0\Storages\Exceptions\StorageObjectNotFoundException;
 use JaD0\Storages\Exceptions\StorageException;
 use JaD0\Storages\Interfaces\Storage;
 use Psr\Http\Message\StreamInterface;
@@ -15,6 +16,10 @@ use UnexpectedValueException;
 
 /**
  * Адаптер Storage для локальной файловой системы, использующий директорию как корень хранилища.
+ *
+ * Чтение и копирование отсутствующего исходного объекта завершаются
+ * StorageObjectNotFoundException. Ошибки доступа и ввода-вывода остаются
+ * техническими StorageException.
  */
 class FileSystemStorage implements Storage
 {
@@ -53,7 +58,32 @@ class FileSystemStorage implements Storage
      */
     public function exists(string $path): bool
     {
-        return file_exists($this->getFullPath($path));
+        if (!is_dir($this->basePath) || !is_readable($this->basePath)) {
+            $message = "Корневая директория хранилища недоступна: $this->basePath";
+            $this->logger->error($message, ["category" => "storage.FileSystemStorage"]);
+
+            throw new StorageException($message);
+        }
+
+        $fullPath = $this->getFullPath($path);
+
+        if (file_exists($fullPath)) {
+            return true;
+        }
+
+        $existingParent = dirname($fullPath);
+        while (!is_dir($existingParent) && dirname($existingParent) !== $existingParent) {
+            $existingParent = dirname($existingParent);
+        }
+
+        if (!is_dir($existingParent) || !is_readable($existingParent)) {
+            $message = "Не удалось достоверно проверить наличие файла: $path";
+            $this->logger->error($message, ["category" => "storage.FileSystemStorage"]);
+
+            throw new StorageException($message);
+        }
+
+        return false;
     }
 
     /**
@@ -68,7 +98,7 @@ class FileSystemStorage implements Storage
             $message = "Исходный файл не найден: $srcPath";
             $this->logger->error($message, ["category" => "storage.FileSystemStorage"]);
 
-            throw new StorageException($message);
+            throw new StorageObjectNotFoundException($srcPath);
         }
 
         $this->ensureDirectoryExists(dirname($fullDest));
@@ -94,6 +124,11 @@ class FileSystemStorage implements Storage
         }
 
         $fullStoragePath = $this->getFullPath($storagePath);
+
+        if (file_exists($fullStoragePath) && realpath($localPath) === realpath($fullStoragePath)) {
+            return;
+        }
+
         $this->ensureDirectoryExists(dirname($fullStoragePath));
 
         if (!@copy($localPath, $fullStoragePath)) {
@@ -127,7 +162,7 @@ class FileSystemStorage implements Storage
             $message = "Файл не найден для чтения: $path";
             $this->logger->error($message, ["category" => "storage.FileSystemStorage"]);
 
-            throw new StorageException($message);
+            throw new StorageObjectNotFoundException($path);
         }
 
         $resource = @fopen($this->getFullPath($path), 'rb');
@@ -214,7 +249,10 @@ class FileSystemStorage implements Storage
     }
 
     /**
-     * Формирует полный путь с учетом базовой директории
+     * Формирует полный путь с учетом базовой директории.
+     *
+     * @param string $path
+     * @return string
      */
     protected function getFullPath(string $path): string
     {
@@ -222,7 +260,10 @@ class FileSystemStorage implements Storage
     }
 
     /**
-     * Нормализует путь хранилища к slash-separated формату.
+     * Нормализует путь хранилища к формату с разделителем "/".
+     *
+     * @param string $path
+     * @return string
      */
     protected function normalizeStoragePath(string $path): string
     {
@@ -230,7 +271,10 @@ class FileSystemStorage implements Storage
     }
 
     /**
-     * Создает рекурсивно директории, если они не существуют
+     * Создает рекурсивно директории, если они не существуют.
+     *
+     * @param string $directory
+     * @return void
      * @throws StorageException
      */
     protected function ensureDirectoryExists(string $directory): void

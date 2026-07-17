@@ -3,6 +3,8 @@
 namespace JaD0\Storages\Interfaces;
 
 use JaD0\Storages\Exceptions\StorageException;
+use JaD0\Storages\Exceptions\StorageObjectNotFoundException;
+use JaD0\Storages\Exceptions\StorageUnavailableException;
 use Psr\Http\Message\StreamInterface;
 
 /**
@@ -11,11 +13,12 @@ use Psr\Http\Message\StreamInterface;
 interface ReadableStorage
 {
     /**
-     * Проверить существует ли объект в хранилище
+     * Проверить существует ли объект в хранилище.
+     * Возвращает false только тогда, когда хранилище достоверно подтвердило отсутствие объекта.
      *
      * @param string $path
      * @return bool
-     * @throws StorageException
+     * @throws StorageException в случае технической ошибки хранилища
      */
     public function exists(string $path): bool;
 
@@ -24,7 +27,9 @@ interface ReadableStorage
      *
      * @param string $path
      * @return StreamInterface
-     * @throws StorageException в случае ошибки во время чтения файла
+     * @throws StorageObjectNotFoundException если объект достоверно отсутствует
+     * @throws StorageUnavailableException если хранилище недоступно
+     * @throws StorageException в случае другой технической ошибки во время чтения файла
      */
     public function readAsStream(string $path): StreamInterface;
 }

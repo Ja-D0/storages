@@ -5,7 +5,9 @@ namespace JaD0\Storages\Adapters\Swift;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Psr7\Stream;
 use JaD0\Storages\Dto\ListedObject;
+use JaD0\Storages\Exceptions\StorageObjectNotFoundException;
 use JaD0\Storages\Exceptions\StorageException;
+use JaD0\Storages\Exceptions\StorageUnavailableException;
 use JaD0\Storages\Interfaces\Storage;
 use JaD0\Storages\Support\MimeTypeResolver;
 use OpenStack\Common\Error\BadResponseError;
@@ -65,8 +67,18 @@ class SwiftStorage implements Storage
     public function exists(string $path): bool
     {
         try {
-            return $this->getContainerForObjectStore()->objectExists($path);
+            $exists = $this->getContainerForObjectStore()->objectExists($path);
+
+            if (!$exists) {
+                $this->assertContainerExists();
+            }
+
+            return $exists;
         } catch (BadResponseError $badResponseError) {
+            if ($this->isObjectNotFound($badResponseError)) {
+                return false;
+            }
+
             $this->logger->error(
                 "Ошибка проверки существования объекта '$path' в контейнере '$this->containerName': "
                 . $badResponseError->getMessage(),
@@ -80,7 +92,7 @@ class SwiftStorage implements Storage
                 ["category" => "storage.SwiftStorage", "exception" => $connectException]
             );
 
-            throw new StorageException($connectException->getMessage(), true, $connectException);
+            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
         }
     }
 
@@ -95,6 +107,10 @@ class SwiftStorage implements Storage
             $containerName = $container->name;
             $container->getObject($srcPath)->copy(["destination" => "$containerName/$destPath"]);
         } catch (BadResponseError $badResponseError) {
+            if ($this->isObjectNotFound($badResponseError)) {
+                throw new StorageObjectNotFoundException($srcPath, $badResponseError);
+            }
+
             $this->logger->error(
                 "Ошибка копирования объекта '$srcPath' -> '$destPath' в контейнере '$this->containerName': "
                 . $badResponseError->getMessage(),
@@ -109,7 +125,7 @@ class SwiftStorage implements Storage
                 ["category" => "storage.SwiftStorage", "exception" => $connectException]
             );
 
-            throw new StorageException($connectException->getMessage(), true, $connectException);
+            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
         }
     }
 
@@ -152,7 +168,9 @@ class SwiftStorage implements Storage
                 ["category" => "storage.SwiftStorage", "exception" => $connectException]
             );
 
-            throw new StorageException($connectException->getMessage(), true, $connectException);
+            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
+        } finally {
+            $stream->close();
         }
     }
 
@@ -170,9 +188,10 @@ class SwiftStorage implements Storage
                 ["category" => "storage.SwiftStorage", "exception" => $connectException]
             );
 
-            throw new StorageException($connectException->getMessage(), true, $connectException);
+            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
         } catch (BadResponseError $badResponseError) {
             if ($badResponseError->getResponse()->getStatusCode() === 404) {
+                $this->assertContainerExists($badResponseError);
                 return;
             }
 
@@ -194,6 +213,10 @@ class SwiftStorage implements Storage
         try {
             return $this->getContainerForObjectStore()->getObject($path)->download();
         } catch (BadResponseError $badResponseError) {
+            if ($this->isObjectNotFound($badResponseError)) {
+                throw new StorageObjectNotFoundException($path, $badResponseError);
+            }
+
             $this->logger->error(
                 "Ошибка при чтении объекта '$path' в поток в контейнере '$this->containerName': "
                 . $badResponseError->getMessage(),
@@ -208,7 +231,7 @@ class SwiftStorage implements Storage
                 ["category" => "storage.SwiftStorage", "exception" => $connectException]
             );
 
-            throw new StorageException($connectException->getMessage(), true, $connectException);
+            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
         }
     }
 
@@ -249,7 +272,7 @@ class SwiftStorage implements Storage
                 ["category" => "storage.SwiftStorage", "exception" => $connectException]
             );
 
-            throw new StorageException($connectException->getMessage(), true, $connectException);
+            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
         }
     }
 
@@ -285,7 +308,7 @@ class SwiftStorage implements Storage
                 ["category" => "storage.SwiftStorage", "exception" => $connectException]
             );
 
-            throw new StorageException($connectException->getMessage(), true, $connectException);
+            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
         }
     }
 
@@ -317,13 +340,65 @@ class SwiftStorage implements Storage
 
     /**
      * Обрабатывает исключение неуспешного ответа от хранилища.
-     * Все ответы со статусом >= 500 считаются ответами недоступности хранилища
+     * Все ответы со статусом >= 500 считаются ответами недоступности хранилища.
      *
+     * @param BadResponseError $badResponseError
+     * @return void
      * @throws StorageException
      */
     protected function handleBadResponseError(BadResponseError $badResponseError): void
     {
         $isNotAvailable = $badResponseError->getResponse()->getStatusCode() >= 500;
+
+        if ($isNotAvailable) {
+            throw new StorageUnavailableException($badResponseError->getMessage(), $badResponseError);
+        }
+
         throw new StorageException($badResponseError->getMessage(), $isNotAvailable, $badResponseError);
+    }
+
+    /**
+     * Проверяет, что Swift достоверно сообщил об отсутствии объекта.
+     *
+     * @param BadResponseError $badResponseError
+     * @return bool
+     * @throws StorageException в случае отсутствия или ошибки проверки контейнера
+     */
+    private function isObjectNotFound(BadResponseError $badResponseError): bool
+    {
+        if ($badResponseError->getResponse()->getStatusCode() !== 404) {
+            return false;
+        }
+
+        $this->assertContainerExists($badResponseError);
+
+        return true;
+    }
+
+    /**
+     * Проверяет, что ответ 404 относится к объекту, а не к отсутствующему контейнеру.
+     *
+     * @param BadResponseError|null $objectError Исходная ошибка проверки объекта
+     * @return void
+     * @throws StorageException в случае отсутствия или ошибки проверки контейнера
+     */
+    private function assertContainerExists(?BadResponseError $objectError = null): void
+    {
+        try {
+            $exists = $this->openStack->objectStoreV1()->containerExists($this->containerName);
+        } catch (ConnectException $connectException) {
+            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
+        } catch (BadResponseError $containerError) {
+            $this->handleBadResponseError($containerError);
+            return;
+        }
+
+        if (!$exists) {
+            throw new StorageException(
+                "Swift container '$this->containerName' does not exist",
+                false,
+                $objectError
+            );
+        }
     }
 }

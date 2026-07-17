@@ -3,6 +3,7 @@
 namespace JaD0\Storages\Interfaces;
 
 use JaD0\Storages\Exceptions\StorageException;
+use JaD0\Storages\Exceptions\StorageObjectNotFoundException;
 use Psr\Http\Message\StreamInterface;
 
 /**
@@ -21,17 +22,21 @@ interface WritableStorage
     public function push(string $localPath, string $storagePath): void;
 
     /**
-     * Создает копию существующего объекта по новому пути
+     * Создает копию существующего объекта по новому пути.
      *
      * @param string $srcPath
      * @param string $destPath
      * @return void
+     * @throws StorageObjectNotFoundException если исходный объект достоверно отсутствует
      * @throws StorageException в случае ошибки при копировании
      */
     public function copy(string $srcPath, string $destPath): void;
 
     /**
-     * Удалить объект из хранилища
+     * Удалить объект из хранилища.
+     *
+     * Отсутствующий объект считается успешно удалённым. Реализация не должна
+     * считать успешным удаление из отсутствующего или недоступного хранилища.
      *
      * @param string $path
      * @return void

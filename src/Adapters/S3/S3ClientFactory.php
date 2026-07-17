@@ -31,7 +31,7 @@ class S3ClientFactory implements ClientFactory
         ];
 
         if ($config->requestOptions !== null) {
-            $options = array_replace($options, $config->requestOptions->toArray());
+            $options["http"] = $config->requestOptions->toArray();
         }
 
         return new S3Client($options);

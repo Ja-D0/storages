@@ -5,7 +5,9 @@ namespace JaD0\Storages\Adapters\S3;
 use Aws\S3\Exception\S3Exception;
 use Aws\S3\S3Client;
 use JaD0\Storages\Dto\ListedObject;
+use JaD0\Storages\Exceptions\StorageObjectNotFoundException;
 use JaD0\Storages\Exceptions\StorageException;
+use JaD0\Storages\Exceptions\StorageUnavailableException;
 use JaD0\Storages\Interfaces\Storage;
 use JaD0\Storages\Support\MimeTypeResolver;
 use Psr\Http\Message\StreamInterface;
@@ -13,6 +15,10 @@ use Psr\Log\LoggerInterface;
 
 /**
  * Адаптер Storage для S3-совместимого объектного хранилища.
+ *
+ * Отсутствие объекта при чтении определяется только по объектному коду NoSuchKey.
+ * После отрицательного результата проверки объекта адаптер отдельно проверяет бакет,
+ * чтобы отсутствующий бакет не был ошибочно представлен как отсутствующий объект.
  */
 class S3Storage implements Storage
 {
@@ -57,14 +63,24 @@ class S3Storage implements Storage
     public function exists(string $path): bool
     {
         try {
-            return $this->client->doesObjectExistV2($this->bucket, $path);
+            $exists = $this->client->doesObjectExistV2($this->bucket, $path);
+
+            if (!$exists) {
+                $this->assertBucketExists();
+            }
+
+            return $exists;
         } catch (S3Exception $exception) {
+            if ($this->isObjectNotFound($exception)) {
+                return false;
+            }
+
             $this->logger->error(
                 "Ошибка при проверке существования объекта '$path' в бакете '$this->bucket': " . $exception,
                 ["category" => "storage.S3Storage", "exception" => $exception]
             );
 
-            throw new StorageException($exception->getMessage(), $exception->isConnectionError(), $exception);
+            throw $this->convertException($exception);
         }
     }
 
@@ -80,12 +96,16 @@ class S3Storage implements Storage
                 'CopySource' => "$this->bucket/$srcPath",
             ]);
         } catch (S3Exception $exception) {
+            if ($this->isObjectNotFound($exception)) {
+                throw new StorageObjectNotFoundException($srcPath, $exception);
+            }
+
             $this->logger->error(
                 "Ошибка при копировании объекта '$srcPath' -> '$destPath' в бакете '$this->bucket':" . $exception,
                 ["category" => "storage.S3Storage", "exception" => $exception]
             );
 
-            throw new StorageException($exception->getMessage(), $exception->isConnectionError(), $exception);
+            throw $this->convertException($exception);
         }
     }
 
@@ -107,7 +127,7 @@ class S3Storage implements Storage
                 ["category" => "storage.S3Storage", "exception" => $exception]
             );
 
-            throw new StorageException($exception->getMessage(), $exception->isConnectionError(), $exception);
+            throw $this->convertException($exception);
         }
     }
 
@@ -122,12 +142,16 @@ class S3Storage implements Storage
                 'Key' => $path,
             ]);
         } catch (S3Exception $exception) {
+            if ($this->isObjectNotFound($exception)) {
+                return;
+            }
+
             $this->logger->error(
                 "Ошибка при удалении объекта '$path' из бакета '$this->bucket': " . $exception,
                 ["category" => "storage.S3Storage", "exception" => $exception]
             );
 
-            throw new StorageException($exception->getMessage(), $exception->isConnectionError(), $exception);
+            throw $this->convertException($exception);
         }
     }
 
@@ -144,12 +168,16 @@ class S3Storage implements Storage
 
             return $result['Body'];
         } catch (S3Exception $exception) {
+            if ($this->isObjectNotFound($exception)) {
+                throw new StorageObjectNotFoundException($path, $exception);
+            }
+
             $this->logger->error(
                 "Ошибка при чтении объекта '$path' в поток в бакете '$this->bucket': " . $exception,
                 ["category" => "storage.S3Storage", "exception" => $exception]
             );
 
-            throw new StorageException($exception->getMessage(), $exception->isConnectionError(), $exception);
+            throw $this->convertException($exception);
         }
     }
 
@@ -186,7 +214,7 @@ class S3Storage implements Storage
                 ["category" => "storage.S3Storage", "exception" => $exception]
             );
 
-            throw new StorageException($exception->getMessage(), $exception->isConnectionError(), $exception);
+            throw $this->convertException($exception);
         }
     }
 
@@ -212,7 +240,52 @@ class S3Storage implements Storage
                 ["category" => "storage.S3Storage", "exception" => $exception]
             );
 
-            throw new StorageException($exception->getMessage(), $exception->isConnectionError(), $exception);
+            throw $this->convertException($exception);
+        }
+    }
+
+    /**
+     * Преобразует исключение S3 SDK в публичный контракт исключений хранилища.
+     *
+     * @param S3Exception $exception
+     * @return StorageException
+     */
+    private function convertException(S3Exception $exception): StorageException
+    {
+        if ($exception->isConnectionError() || $exception->getStatusCode() >= 500) {
+            return new StorageUnavailableException($exception->getMessage(), $exception);
+        }
+
+        return new StorageException($exception->getMessage(), false, $exception);
+    }
+
+    /**
+     * Проверяет, что S3 достоверно сообщил об отсутствии объекта.
+     *
+     * @param S3Exception $exception
+     * @return bool
+     */
+    private function isObjectNotFound(S3Exception $exception): bool
+    {
+        return $exception->getAwsErrorCode() === "NoSuchKey";
+    }
+
+    /**
+     * Проверяет, что отрицательный результат проверки объекта не вызван отсутствием бакета.
+     *
+     * @return void
+     * @throws StorageException в случае отсутствия или ошибки проверки бакета
+     */
+    private function assertBucketExists(): void
+    {
+        try {
+            $exists = $this->client->doesBucketExistV2($this->bucket);
+        } catch (S3Exception $exception) {
+            throw $this->convertException($exception);
+        }
+
+        if (!$exists) {
+            throw new StorageException("S3 bucket '$this->bucket' does not exist");
         }
     }
 }
