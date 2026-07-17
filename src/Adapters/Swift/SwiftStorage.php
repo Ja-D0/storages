@@ -67,13 +67,7 @@ class SwiftStorage implements Storage
     public function exists(string $path): bool
     {
         try {
-            $exists = $this->getContainerForObjectStore()->objectExists($path);
-
-            if (!$exists) {
-                $this->assertContainerExists();
-            }
-
-            return $exists;
+            return $this->getContainerForObjectStore()->objectExists($path);
         } catch (BadResponseError $badResponseError) {
             if ($this->isObjectNotFound($badResponseError)) {
                 return false;
@@ -373,32 +367,5 @@ class SwiftStorage implements Storage
         $this->assertContainerExists($badResponseError);
 
         return true;
-    }
-
-    /**
-     * Проверяет, что ответ 404 относится к объекту, а не к отсутствующему контейнеру.
-     *
-     * @param BadResponseError|null $objectError Исходная ошибка проверки объекта
-     * @return void
-     * @throws StorageException в случае отсутствия или ошибки проверки контейнера
-     */
-    private function assertContainerExists(?BadResponseError $objectError = null): void
-    {
-        try {
-            $exists = $this->openStack->objectStoreV1()->containerExists($this->containerName);
-        } catch (ConnectException $connectException) {
-            throw new StorageUnavailableException($connectException->getMessage(), $connectException);
-        } catch (BadResponseError $containerError) {
-            $this->handleBadResponseError($containerError);
-            return;
-        }
-
-        if (!$exists) {
-            throw new StorageException(
-                "Swift container '$this->containerName' does not exist",
-                false,
-                $objectError
-            );
-        }
     }
 }

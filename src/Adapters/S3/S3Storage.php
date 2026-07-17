@@ -63,13 +63,7 @@ class S3Storage implements Storage
     public function exists(string $path): bool
     {
         try {
-            $exists = $this->client->doesObjectExistV2($this->bucket, $path);
-
-            if (!$exists) {
-                $this->assertBucketExists();
-            }
-
-            return $exists;
+            return $this->client->doesObjectExistV2($this->bucket, $path);
         } catch (S3Exception $exception) {
             if ($this->isObjectNotFound($exception)) {
                 return false;
@@ -268,24 +262,5 @@ class S3Storage implements Storage
     private function isObjectNotFound(S3Exception $exception): bool
     {
         return $exception->getAwsErrorCode() === "NoSuchKey";
-    }
-
-    /**
-     * Проверяет, что отрицательный результат проверки объекта не вызван отсутствием бакета.
-     *
-     * @return void
-     * @throws StorageException в случае отсутствия или ошибки проверки бакета
-     */
-    private function assertBucketExists(): void
-    {
-        try {
-            $exists = $this->client->doesBucketExistV2($this->bucket);
-        } catch (S3Exception $exception) {
-            throw $this->convertException($exception);
-        }
-
-        if (!$exists) {
-            throw new StorageException("S3 bucket '$this->bucket' does not exist");
-        }
     }
 }
