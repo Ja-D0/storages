@@ -185,7 +185,6 @@ class SwiftStorage implements Storage
             throw new StorageUnavailableException($connectException->getMessage(), $connectException);
         } catch (BadResponseError $badResponseError) {
             if ($badResponseError->getResponse()->getStatusCode() === 404) {
-                $this->assertContainerExists($badResponseError);
                 return;
             }
 
@@ -363,8 +362,6 @@ class SwiftStorage implements Storage
         if ($badResponseError->getResponse()->getStatusCode() !== 404) {
             return false;
         }
-
-        $this->assertContainerExists($badResponseError);
 
         return true;
     }
